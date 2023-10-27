@@ -15,6 +15,7 @@ void ConfigureGpio(void);
 void ConfigureDac(void);
 void ConfigureAdc(void);
 void ConfigureTimer(void);
+float PLL(float vin, float delta_time);
 
 void Init(void) {
     ConfigureGpio();
@@ -26,10 +27,11 @@ void Init(void) {
 void TimerCallback(void) {
     static float time = 0;
     static float delta_time = 1.f/SAMPLE_FREQ;
+    static float vin;
 
     GpioDataRegs.GPATOGGLE.bit.GPIO31 = 1;
-    DacaRegs.DACVALS.all = (uint16_t)(2048 + 2000 * sin(2 * 3.141592 * 100 * time));
-    DacbRegs.DACVALS.all = (uint16_t)(2048 + 2000 * sin(2 * 3.141592 * 200 * time));
+    vin = AdcaResultRegs.ADCRESULT0;
+    DacbRegs.DACVALS.all = PLL(vin, delta_time);
 
     time += delta_time;
 }
@@ -114,4 +116,15 @@ void ConfigureDac(void) {
 __interrupt void cpu_timer0_isr(void) {
     TimerCallback();
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
+}
+
+float PLL(float vin, float delta_time) {
+    static float vo = 0, vphi = 0, vctrl, w, tetha = 0;
+    static const float k = 1, kp = 1, ki = 1, kvco = 1, wc = 1;
+    vphi += (k*vin*vo)*delta_time;
+    vctrl = kp + ki*vphi;
+    w = kvco*vctrl + wc;
+    tetha += w*delta_time;
+    vo = cos(tetha);
+    return vo;
 }
