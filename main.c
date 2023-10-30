@@ -7,14 +7,21 @@
 #include "F28x_Project.h"
 #include "math.h"
 
-#define SAMPLE_FREQ     10000.f // Timer interruption frequency
-#define CPU_FREQ        200000000.f
+#define SAMPLE_FREQ 10000.f // Timer interruption frequency
+#define SIGNAL_FREQ 60.f
+#define CPU_FREQ    200000000.f
+#define PI          3.141592
 
 void cpu_timer0_isr(void);
 void ConfigureGpio(void);
 void ConfigureDac(void);
 void ConfigureAdc(void);
 void ConfigureTimer(void);
+
+float PLL(float vin, float vo, float delta_time);
+float notchFilter(float vin,  float tetha, float delta_time);
+float ePLL(float vin, float delta_time);
+
 
 void Init(void) {
     ConfigureGpio();
@@ -24,14 +31,20 @@ void Init(void) {
 }
 
 void TimerCallback(void) {
-    static float time = 0;
-    static float delta_time = 1.f/SAMPLE_FREQ;
+    static float time = 0, delta_time = 1.f/SAMPLE_FREQ;
+    const  float signal_period = 1.f/SIGNAL_FREQ;
+    Uint16 signal;
+    int vadc;
+    float vin;
 
-    GpioDataRegs.GPATOGGLE.bit.GPIO31 = 1;
-    DacaRegs.DACVALS.all = (uint16_t)(2048 + 2000 * sin(2 * 3.141592 * 100 * time));
-    DacbRegs.DACVALS.all = (uint16_t)(2048 + 2000 * sin(2 * 3.141592 * 200 * time));
+    signal = (uint16_t)(2000*sin(2*PI*SIGNAL_FREQ*time)+2048);
+    vadc = signal - 2048;
+    vin  = vadc / 2048.f;
+    DacaRegs.DACVALS.all = (Uint16)(2048*vin + 2048);
+    DacbRegs.DACVALS.all = (Uint16)(2048.f*ePLL(vin, delta_time) + 2048);
 
     time += delta_time;
+    if(time >= signal_period) time -= signal_period;
 }
 
 int main(void) {
@@ -114,4 +127,38 @@ void ConfigureDac(void) {
 __interrupt void cpu_timer0_isr(void) {
     TimerCallback();
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
+}
+
+float PLL(float vin, float vo, float delta_time) {
+    static float angle = 0, integral = 0;
+    const float kp = 1, ki = 1000, wc = 2*PI*SIGNAL_FREQ;
+    float Epd, Vlf, w;
+
+    Epd = (vin - vo) * sin(angle);
+    integral += Epd*delta_time;
+    Vlf = kp*Epd + ki*integral;
+    w   = Vlf + wc;
+    angle += w*delta_time;
+
+    if(angle >= 2*PI) angle -= 2*PI;
+    return angle;
+}
+
+float notchFilter(float vin, float angle, float delta_time) {
+    static float vo = 0, integral = 0;
+    const  float k = 50.f;
+    float cosine, ve;
+
+    ve = vin - vo;
+    cosine = -cos(angle);
+    integral += k*(ve*cosine)*delta_time;
+    vo = integral*cosine;
+    return vo;
+}
+
+float ePLL(float vin, float delta_time) {
+    static float vo = 0, angle = 0;
+    vo = notchFilter(vin, angle, delta_time);
+    angle = PLL(vin, vo, delta_time);
+    return vo;
 }
