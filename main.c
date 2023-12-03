@@ -7,14 +7,23 @@
 #include "F28x_Project.h"
 #include "math.h"
 
-#define SAMPLE_FREQ     10000.f // Timer interruption frequency
-#define CPU_FREQ        200000000.f
+#define SAMPLE_FREQ 10000.f // Timer interruption frequency
+#define SIGNAL_FREQ 60.f
+#define CPU_FREQ    200000000.f
+#define PI          3.14159265359f
 
 void cpu_timer0_isr(void);
 void ConfigureGpio(void);
 void ConfigureDac(void);
 void ConfigureAdc(void);
 void ConfigureTimer(void);
+
+float fourier_PLL(float vin, double delta_time);
+float demodulator(float vin, float x[], float y[], float osc);
+void  update_vectors(float x[], float y[]);
+
+const float a[] = {7.891007280221740e-07, 7.886334154817000e-07};
+const float b[] = {1, -1.998222847292257, 0.998224425026401};
 
 void Init(void) {
     ConfigureGpio();
@@ -24,14 +33,22 @@ void Init(void) {
 }
 
 void TimerCallback(void) {
-    static float time = 0;
-    static float delta_time = 1.f/SAMPLE_FREQ;
+    static double time = 0;
+    static const float delta_time = 1.f/SAMPLE_FREQ, signal_period = 1.f/SIGNAL_FREQ;
+    Uint16 signal;
+    int vadc;
+    float vin;
+
+    signal = (uint16_t)(2000*sin(2*PI*SIGNAL_FREQ*time)+2048);
+    vadc = signal - 2048;
+    vin  = vadc / 2048.f;
 
     GpioDataRegs.GPATOGGLE.bit.GPIO31 = 1;
-    DacaRegs.DACVALS.all = (uint16_t)(2048 + 2000 * sin(2 * 3.141592 * 100 * time));
-    DacbRegs.DACVALS.all = (uint16_t)(2048 + 2000 * sin(2 * 3.141592 * 200 * time));
+    DacaRegs.DACVALS.all = (Uint16)(2000*vin + 2048);
+    DacbRegs.DACVALS.all = (Uint16)(1000*fourier_PLL(vin, delta_time) + 2048);
 
     time += delta_time;
+    if (time >= signal_period) time -= signal_period;
 }
 
 int main(void) {
@@ -114,4 +131,37 @@ void ConfigureDac(void) {
 __interrupt void cpu_timer0_isr(void) {
     TimerCallback();
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
+}
+
+void update_vectors(float x[], float y[]) {
+    int i;
+    for(i=1; i>=0; i--) {
+        x[i] = (i>0) ? x[i-1] : 0;
+        y[i] = (i>0) ? y[i-1] : 0;
+    }
+}
+
+float demodulator(float vin, float x[], float y[], float osc) {
+    const float gain = 2.0;
+    float vout;
+    x[0] = vin*osc;
+    y[0] = b[0]*x[0] + b[1]*x[1] + b[2]*x[2] - a[0]*y[1] - a[1]*y[2];
+    //y[0] = b[0]*x[0] + b[1]*x[1] - a[0]*y[1];
+    vout = (gain*y[0])*osc;
+    update_vectors(x, y);
+    return vout;
+}
+
+float fourier_PLL(float vin, double delta_time) {
+    static float X1[2] = {0}, X2[2] = {0}; // LPF INPUT
+    static float Y1[2] = {0}, Y2[2] = {0}; // LPF OPUTPUT
+    static double angle = 0, w = 2*PI*SIGNAL_FREQ;
+    float vo1, vo2;
+
+    vo1 = demodulator(vin, X1, Y1, cos(angle));
+    vo2 = demodulator(vin, X2, Y2, sin(angle));
+
+    angle += w*delta_time;
+    if (angle >= 2*PI) angle -= 2*PI;
+    return vo1+vo2;
 }
