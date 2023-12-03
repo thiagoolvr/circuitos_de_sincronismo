@@ -7,8 +7,10 @@
 #include "F28x_Project.h"
 #include "math.h"
 
-#define SAMPLE_FREQ     10000.f // Timer interruption frequency
-#define CPU_FREQ        200000000.f
+#define SAMPLE_FREQ 10000.f // Timer interruption frequency
+#define SIGNAL_FREQ 60.f
+#define CPU_FREQ    200000000.f
+#define PI          3.14159265359f
 
 void cpu_timer0_isr(void);
 void ConfigureGpio(void);
@@ -25,14 +27,18 @@ void Init(void) {
 }
 
 void TimerCallback(void) {
-    static float time = 0;
-    static float delta_time = 1.f/SAMPLE_FREQ;
-    static float vin;
+    static float time = 0, delta_time = 1.f/SAMPLE_FREQ;
+    Uint16 signal;
+    int vadc;
+    float vin;
+
+    signal = (uint16_t)(2000*sin(2*PI*SIGNAL_FREQ*time)+2048);
+    vadc = signal - 2048;
+    vin  = vadc / 2048.f;
 
     GpioDataRegs.GPATOGGLE.bit.GPIO31 = 1;
-    vin = AdcaResultRegs.ADCRESULT0;
-    DacbRegs.DACVALS.all = PLL(vin, delta_time);
-
+    DacaRegs.DACVALS.all = (Uint16)(2048*vin + 2048);
+    DacbRegs.DACVALS.all = (Uint16)(2000*PLL(vin, delta_time) + 2048);
     time += delta_time;
 }
 
@@ -119,12 +125,17 @@ __interrupt void cpu_timer0_isr(void) {
 }
 
 float PLL(float vin, float delta_time) {
-    static float vo = 0, vphi = 0, vctrl, w, tetha = 0;
-    static const float k = 1, kp = 1, ki = 1, kvco = 1, wc = 1;
-    vphi += (k*vin*vo)*delta_time;
-    vctrl = kp + ki*vphi;
-    w = kvco*vctrl + wc;
-    tetha += w*delta_time;
-    vo = cos(tetha);
-    return vo;
+    const  double kp = 1, ki = 1000, wc = 2*PI*SIGNAL_FREQ;
+    static double vo = 0, integral = 0, angle = 0;
+    double  Epd, Vlf, w;
+
+    Epd = vin*vo;
+    integral += Epd*delta_time;
+    Vlf = kp*Epd + ki*integral;
+    w   = Vlf + wc;
+    angle += w*delta_time;
+    vo = cos(angle);
+
+    if (angle >= 2*PI) angle -= 2*PI;
+    return sin(angle);
 }
